@@ -188,7 +188,6 @@ app.use("/api", middleware);
 // 内置中间件
 app.use(middleware::logger());     // 请求日志
 app.use(middleware::cors());       // CORS 支持
-app.use(middleware::jsonParser()); // JSON 解析
 ```
 
 ### 子路由器

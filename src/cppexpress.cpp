@@ -9,7 +9,6 @@
 namespace cppexpress {
 
 // 确保Buffer中的静态成员被定义
-// constexpr char Buffer::kCRLF[] 在C++17中不需要额外定义
 
 // 库版本信息
 const char* version() {
