@@ -236,7 +236,11 @@ res.sendFile("file.html"); // 发送文件
 
 ### 有限状态机 HTTP 解析
 
-解析器使用三个状态：`REQUEST_LINE` → `HEADERS` → `BODY`，支持分段解析以适配非阻塞 I/O。请求行使用正则表达式 `^(\w+)\s+(\S+)\s+(HTTP/\d\.\d)$` 匹配，URI 使用 `^([^?#]+)(?:\?([^#]*))?(?:#.*)?$` 分离路径和查询字符串。
+解析器使用三个状态：`REQUEST_LINE` → `HEADERS` → `BODY`，支持分段解析以适配非阻塞 I/O。请求行、URI、查询串、头部均采用**手写字符串扫描**实现（而非 `std::regex`），避免热路径上正则引擎的高开销。URI 通过定位 `?` / `#` 分离路径与查询字符串，查询串按 `&` / `=` 切分键值对，头部按首个 `:` 切分并修剪两侧空白。
+
+### 路由匹配
+
+路由模式在注册时被预编译为有序分段列表（`LITERAL` / `PARAM` / `WILDCARD`），匹配时对请求路径做单次线性扫描，参数在扫描过程中就地提取。相比每请求 `std::regex_match`，避免了正则编译/匹配开销。
 
 ### 内存池
 
@@ -245,6 +249,22 @@ res.sendFile("file.html"); // 发送文件
 ### 长连接
 
 HTTP/1.1 默认启用 Keep-Alive，解析器在完成一个请求后自动重置状态，继续解析同一连接上的下一个请求。通过 `Connection: close` 头可以关闭长连接。
+
+## 📊 性能
+
+项目附带压测脚本，见 [`benchmark/`](benchmark/)。
+
+```bash
+# 构建 Release 并启动
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
+./example &
+
+# 压测（需 wrk）
+../benchmark/bench.sh
+```
+
+Release `-O2` 下，单机 4 线程 × 1000 并发 Keep-Alive 场景的 QPS / 延迟数据请运行压测后填入 [`benchmark/README.md`](benchmark/README.md) 的结果表格。
 
 ## 📄 License
 

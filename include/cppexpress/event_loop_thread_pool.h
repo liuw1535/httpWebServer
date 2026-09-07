@@ -19,10 +19,7 @@ namespace cppexpress {
 
 class EventLoopThread {
 public:
-    EventLoopThread()
-        : loop_(nullptr)
-        , started_(false) {
-    }
+    EventLoopThread() = default;
 
     ~EventLoopThread() {
         if (loop_) {
@@ -58,8 +55,7 @@ private:
         loop_ = nullptr;
     }
 
-    EventLoop* loop_;
-    bool started_;
+    EventLoop* loop_ = nullptr;
     std::thread thread_;
     std::mutex mutex_;
     std::condition_variable cond_;
