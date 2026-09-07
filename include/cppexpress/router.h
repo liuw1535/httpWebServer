@@ -62,43 +62,58 @@ private:
     /**
      * 将 Express 风格的路径模式编译为分段
      *   /user/:id   -> LITERAL "/user/" + PARAM "id"
-     *   /files/*    -> LITERAL "/files/" + WILDCARD
+     *   /files/[*]  -> LITERAL "/files/" + WILDCARD
+     *
+     * 按 '/' 切分：每个 '/' 连同其后的段名一起构成一段。
+     * ':' 起头的段名 => PARAM，'*' => WILDCARD，其余 => LITERAL。
      */
     void compilePattern() {
-        // 在 pattern 上按 '/' 分段遍历
         size_t i = 0;
         while (i < pattern.size()) {
-            if (pattern[i] == '*') {
+            char c = pattern[i];
+            if (c == '*') {
                 hasWildcard_ = true;
                 break; // 通配符必须在末尾，剩余路径由 wildcard 消费
             }
 
-            // 沿用 '/' 作为段分隔，但 literal 段允许跨多个 '/'（连续斜杠也照常匹配）
-            // 这里改用逐段：每个段是一个 '/' 起头后到下一个 '/' 前的内容
-            // 为简单起见，按 '/' 分段
-            size_t segStart = i;
-            // 找到下一个 '/' 的位置
-            size_t segEnd = pattern.find('/', i + 1);
-            if (segEnd == std::string::npos) segEnd = pattern.size();
-            std::string seg = pattern.substr(segStart, segEnd - segStart);
+            // 段以 '/' 开头；非 '/' 开头（如裸 "user"）按字面量处理
+            if (c == '/') {
+                // 收集 '/' 后的段名
+                size_t nameStart = i + 1;
+                size_t nameEnd = pattern.find('/', nameStart);
+                if (nameEnd == std::string::npos) nameEnd = pattern.size();
+                std::string name = pattern.substr(nameStart, nameEnd - nameStart);
 
-            if (!seg.empty() && seg[0] == ':') {
-                // 参数段
-                Segment s;
-                s.type = SegType::PARAM;
-                s.paramName = seg.substr(1);
-                segments_.push_back(std::move(s));
-            } else if (!seg.empty() && seg[0] == '*') {
-                hasWildcard_ = true;
-                break;
+                if (!name.empty() && name[0] == ':') {
+                    Segment s;
+                    s.type = SegType::PARAM;
+                    s.paramName = name.substr(1);
+                    s.literal = "/";   // 前导 '/'
+                    segments_.push_back(std::move(s));
+                } else if (!name.empty() && name[0] == '*') {
+                    Segment s;
+                    s.type = SegType::LITERAL;
+                    s.literal = "/";
+                    segments_.push_back(std::move(s));
+                    hasWildcard_ = true;
+                    break;
+                } else {
+                    Segment s;
+                    s.type = SegType::LITERAL;
+                    s.literal = "/" + name;
+                    segments_.push_back(std::move(s));
+                }
+                i = nameEnd;
             } else {
-                // 字面量段（含前导 '/'）
+                // 不以 '/' 开头的剩余部分，整体作为字面量
+                size_t nameEnd = pattern.find('/', i);
+                if (nameEnd == std::string::npos) nameEnd = pattern.size();
                 Segment s;
                 s.type = SegType::LITERAL;
-                s.literal = seg;
+                s.literal = pattern.substr(i, nameEnd - i);
                 segments_.push_back(std::move(s));
+                i = nameEnd;
             }
-            i = segEnd;
         }
     }
 
@@ -114,40 +129,32 @@ private:
             const Segment& seg = segments_[si];
 
             if (seg.type == SegType::LITERAL) {
-                // 字面量段必须精确匹配
                 const std::string& lit = seg.literal;
-                if (path.compare(pi, lit.size(), lit) != 0) {
-                    return false;
-                }
+                if (path.compare(pi, lit.size(), lit) != 0) return false;
                 pi += lit.size();
             } else if (seg.type == SegType::PARAM) {
-                // 参数段消费到下一个 '/'
-                // 前导 '/' 已包含在本段（compilePattern 中，PARAM 段不含 '/'，
-                // 但其前的 '/' 属于前一段 LITERAL；首个段的 ':' 路径不合法，忽略）
+                // 段 literal 为前导 '/'，先匹配它
+                if (path.compare(pi, seg.literal.size(), seg.literal) != 0) return false;
+                pi += seg.literal.size();
+                // 消费参数值到下一个 '/' 或结尾
                 size_t slash = path.find('/', pi);
                 if (slash == std::string::npos) {
-                    // 后续还有段需要匹配，但 path 已无 '/'，仅当这是最后一段才合法
-                    if (si + 1 != segments_.size()) return false;
+                    // 到结尾，参数值为 path[pi..end)
+                    if (pi == path.size()) return false; // 空参数值不合法
                     params[seg.paramName] = path.substr(pi);
                     pi = path.size();
+                    // 后续还有段则无法匹配
+                    if (si + 1 != segments_.size()) return false;
                     break;
-                } else if (slash == pi) {
-                    // 参数段不允许空值
-                    return false;
                 }
+                if (slash == pi) return false; // 空参数值不合法
                 params[seg.paramName] = path.substr(pi, slash - pi);
                 pi = slash;
             }
         }
 
-        // 通配段：消费剩余所有字符
-        if (hasWildcard_) {
-            // 通配符前应有 '/'，这里宽松匹配，剩余全部接受
-            return true;
-        }
-
-        // 无通配：path 必须被完整消费
-        return pi == path.size();
+        if (hasWildcard_) return true; // 通配消费剩余
+        return pi == path.size();     // 必须完整消费
     }
 };
 

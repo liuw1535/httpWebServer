@@ -10,6 +10,7 @@
 #include <functional>
 #include <vector>
 #include <cstring>
+#include <sys/uio.h>   // readv / iovec
 
 // Windows头文件中的宏冲突处理
 #ifdef PLATFORM_WINDOWS
