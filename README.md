@@ -264,7 +264,17 @@ cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
 ../benchmark/bench.sh
 ```
 
-Release `-O2` 下，单机 4 线程 × 1000 并发 Keep-Alive 场景的 QPS / 延迟数据请运行压测后填入 [`benchmark/README.md`](benchmark/README.md) 的结果表格。
+Release `-O2` 实测数据（客户端 wrk 与服务端同机，8 核 aarch64 Android）：
+
+| 场景 | 并发 | QPS | P99 延迟 |
+|------|------|-----|----------|
+| Hello Keep-Alive | 1000 | **26528** | 58.66ms |
+| Hello Keep-Alive | 5000 | 23650 | 275.01ms |
+| 路径参数 `:id` | 1000 | 23488 | 65.52ms |
+| POST echo | 1000 | 22566 | 66.62ms |
+| 短连接 | 1000 | 2738 | 668.50ms |
+
+> 长连接场景下单机 QPS 达 **2.6 万**，瓶颈在 CPU 用户态 I/O 与解析；短连接因每次请求都要完成 TCP 三次握手，QPS 降至 ~2.7k，符合预期。完整结果见 [`benchmark/README.md`](benchmark/README.md)。
 
 ## 📄 License
 
