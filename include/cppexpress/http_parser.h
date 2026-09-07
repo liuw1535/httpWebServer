@@ -12,6 +12,7 @@
 #include <sstream>
 #include <cstring>
 #include "buffer.h"
+#include "memory_pool.h"
 #include "logger.h"
 
 namespace cppexpress {
@@ -71,8 +72,11 @@ inline std::string httpVersionToString(HttpVersion version) {
 
 /**
  * HTTP请求对象
+ *
+ * 继承 PoolObject，使得 \`new HttpRequest()\` 走多级内存池而非 malloc，
+ * 长连接场景下大量请求对象的创建/销毁由空闲链表承担，减少碎片与系统调用。
  */
-class HttpRequest {
+class HttpRequest : public PoolObject {
 public:
     HttpRequest() : method_(HttpMethod::UNKNOWN), version_(HttpVersion::HTTP_11) {}
 

@@ -111,8 +111,10 @@ private:
 
     void processRequests() {
         while (inputBuffer_.readableBytes() > 0) {
-            HttpRequest request;
-            auto result = parser_.parse(inputBuffer_, request);
+            // 从内存池分配请求对象（HttpRequest 继承 PoolObject，
+            // new 走多级内存池，析构归还空闲链表），减少长连接场景下的碎片
+            auto request = std::make_unique<HttpRequest>();
+            auto result = parser_.parse(inputBuffer_, *request);
 
             if (result == HttpParser::ParseResult::ERROR) {
                 LOG_ERROR("HTTP parse error, fd=" << fd_);
@@ -131,11 +133,11 @@ private:
 
             // 解析完成，处理请求
             if (result == HttpParser::ParseResult::COMPLETE) {
-                bool keepAlive = request.keepAlive();
-                HttpResponse response(request.version(), keepAlive);
+                bool keepAlive = request->keepAlive();
+                HttpResponse response(request->version(), keepAlive);
 
                 if (httpCallback_) {
-                    httpCallback_(request, response);
+                    httpCallback_(*request, response);
                 }
 
                 // 如果处理函数没有发送响应，发送默认404
