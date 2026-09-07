@@ -8,9 +8,9 @@
 
 #include <string>
 #include <unordered_map>
-#include <regex>
 #include <algorithm>
 #include <sstream>
+#include <cstring>
 #include "buffer.h"
 #include "logger.h"
 
@@ -281,64 +281,92 @@ public:
 private:
     /**
      * 解析请求行: METHOD URI HTTP/VERSION
-     * 使用正则表达式提取
+     * 手写解析，避免热路径上 std::regex 的高开销
      */
     bool parseRequestLine(const std::string& line, HttpRequest& request) {
-        // 正则表达式匹配请求行
-        static const std::regex requestLineRegex(
-            R"(^(\w+)\s+(\S+)\s+(HTTP/\d\.\d)$)"
-        );
-
-        std::smatch match;
-        if (!std::regex_match(line, match, requestLineRegex)) {
-            LOG_ERROR("Invalid request line: " << line);
+        // 找两个空格分隔三段：METHOD \s URI \s HTTP/VERSION
+        size_t sp1 = line.find(' ');
+        if (sp1 == std::string::npos) {
+            LOG_ERROR("Invalid request line (no method): " << line);
+            return false;
+        }
+        size_t sp2 = line.find(' ', sp1 + 1);
+        if (sp2 == std::string::npos) {
+            LOG_ERROR("Invalid request line (no version): " << line);
+            return false;
+        }
+        // 行尾不允许多余空格
+        if (line.find(' ', sp2 + 1) != std::string::npos) {
+            LOG_ERROR("Invalid request line (trailing junk): " << line);
             return false;
         }
 
+        std::string methodStr = line.substr(0, sp1);
+        std::string uri = line.substr(sp1 + 1, sp2 - sp1 - 1);
+        std::string version = line.substr(sp2 + 1);
+
+        // 方法必须是 token（字母）
+        for (char c : methodStr) {
+            if (!std::isalpha(static_cast<unsigned char>(c))) {
+                LOG_ERROR("Invalid HTTP method: " << methodStr);
+                return false;
+            }
+        }
+
         // 方法
-        request.setMethod(stringToHttpMethod(match[1].str()));
+        request.setMethod(stringToHttpMethod(methodStr));
         if (request.method() == HttpMethod::UNKNOWN) {
-            LOG_ERROR("Unknown HTTP method: " << match[1].str());
+            LOG_ERROR("Unknown HTTP method: " << methodStr);
             return false;
         }
 
         // URI（包含路径和查询参数）
-        std::string uri = match[2].str();
         request.setUrl(uri);
         parseUri(uri, request);
 
         // 版本
-        std::string version = match[3].str();
         if (version == "HTTP/1.0") {
             request.setVersion(HttpVersion::HTTP_10);
         } else if (version == "HTTP/1.1") {
             request.setVersion(HttpVersion::HTTP_11);
         } else if (version == "HTTP/2.0") {
             request.setVersion(HttpVersion::HTTP_20);
+        } else {
+            LOG_ERROR("Unknown HTTP version: " << version);
+            return false;
         }
 
         return true;
     }
 
     /**
-     * 使用正则表达式解析URI，提取路径和查询参数
+     * 解析URI，提取路径和查询参数
      * 例如: /api/users?name=john&age=30
      */
     void parseUri(const std::string& uri, HttpRequest& request) {
-        // 正则表达式分离路径和查询字符串
-        static const std::regex uriRegex(R"(^([^?#]+)(?:\?([^#]*))?(?:#.*)?$)");
-        
-        std::smatch match;
-        if (std::regex_match(uri, match, uriRegex)) {
-            // URL解码路径
-            request.setPath(urlDecode(match[1].str()));
+        size_t qpos = uri.find('?');
+        size_t hpos = uri.find('#');
 
-            // 解析查询参数
-            if (match[2].matched) {
-                parseQueryString(match[2].str(), request);
-            }
-        } else {
-            request.setPath(uri);
+        // path 截到 '?' 或 '#' 中较早出现的位置
+        size_t pathEnd = std::string::npos;
+        if (qpos != std::string::npos && hpos != std::string::npos) {
+            pathEnd = std::min(qpos, hpos);
+        } else if (qpos != std::string::npos) {
+            pathEnd = qpos;
+        } else if (hpos != std::string::npos) {
+            pathEnd = hpos;
+        }
+
+        std::string path = (pathEnd == std::string::npos) ? uri : uri.substr(0, pathEnd);
+        std::string queryStr;
+        if (qpos != std::string::npos) {
+            size_t qEnd = (hpos != std::string::npos && hpos > qpos) ? hpos : std::string::npos;
+            queryStr = uri.substr(qpos + 1, qEnd == std::string::npos ? std::string::npos : qEnd - qpos - 1);
+        }
+
+        request.setPath(urlDecode(path));
+        if (!queryStr.empty()) {
+            parseQueryString(queryStr, request);
         }
     }
 
@@ -346,15 +374,27 @@ private:
      * 解析查询字符串: key1=value1&key2=value2
      */
     void parseQueryString(const std::string& queryString, HttpRequest& request) {
-        // 正则表达式匹配每个键值对
-        static const std::regex paramRegex(R"(([^&=]+)=([^&]*))");
-        
-        auto begin = std::sregex_iterator(queryString.begin(), queryString.end(), paramRegex);
-        auto end = std::sregex_iterator();
+        size_t start = 0;
+        while (start < queryString.size()) {
+            size_t amp = queryString.find('&', start);
+            std::string pair = (amp == std::string::npos)
+                ? queryString.substr(start)
+                : queryString.substr(start, amp - start);
 
-        for (auto it = begin; it != end; ++it) {
-            std::smatch match = *it;
-            request.setQuery(urlDecode(match[1].str()), urlDecode(match[2].str()));
+            if (!pair.empty()) {
+                size_t eq = pair.find('=');
+                if (eq == std::string::npos) {
+                    // 只有 key，value 为空
+                    request.setQuery(urlDecode(pair), "");
+                } else {
+                    std::string key = pair.substr(0, eq);
+                    std::string val = pair.substr(eq + 1);
+                    request.setQuery(urlDecode(key), urlDecode(val));
+                }
+            }
+
+            if (amp == std::string::npos) break;
+            start = amp + 1;
         }
     }
 
@@ -362,15 +402,35 @@ private:
      * 解析请求头: Key: Value
      */
     bool parseHeader(const std::string& line, HttpRequest& request) {
-        static const std::regex headerRegex(R"(^([^:]+):\s*(.*)$)");
-        
-        std::smatch match;
-        if (std::regex_match(line, match, headerRegex)) {
-            request.setHeader(match[1].str(), match[2].str());
-            return true;
+        size_t colon = line.find(':');
+        if (colon == std::string::npos) {
+            LOG_WARN("Invalid header line (no colon): " << line);
+            return false;
         }
-        LOG_WARN("Invalid header line: " << line);
-        return false;
+
+        std::string key = line.substr(0, colon);
+        // key 不能为空，也不能含空白（RFC 7230 token）
+        if (key.empty()) {
+            LOG_WARN("Invalid header line (empty name): " << line);
+            return false;
+        }
+
+        // 跳过冒号后的可选空白（SP/HTAB）
+        size_t valStart = colon + 1;
+        while (valStart < line.size() &&
+               (line[valStart] == ' ' || line[valStart] == '\t')) {
+            ++valStart;
+        }
+        // 去掉尾部空白
+        size_t valEnd = line.size();
+        while (valEnd > valStart &&
+               (line[valEnd - 1] == ' ' || line[valEnd - 1] == '\t')) {
+            --valEnd;
+        }
+
+        std::string value = line.substr(valStart, valEnd - valStart);
+        request.setHeader(key, value);
+        return true;
     }
 
     /**
